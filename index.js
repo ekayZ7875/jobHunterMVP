@@ -1,22 +1,44 @@
-import express from 'express';
-import errorHandler from './utils/errorHandler.js';
-import morgan from 'morgan'
-import dotenv from 'dotenv'
-dotenv.config()
+import express from "express";
+import dotenv from "dotenv";
+import morgan from "morgan";
+import cron from "node-cron";
+import { crawlWeWorkRemotely } from "./utils/crawler.js";
+// import jobsRoutes from "./routes/jobs.routes.js";
 
+dotenv.config();
 const app = express();
 app.use(express.json());
 app.use(morgan('dev'))
 
+// Routes
+// app.use("/jobs", jobsRoutes);
 
-
-
-app.use(errorHandler);
-
-
-
-
-const port = 8080
-app.listen(port, () => {
-  console.log(`Job Hunter API listening on http://localhost:${port}`);
+// Root route — simple health check
+app.get("/", (req, res) => {
+  res.json({
+    status: "OK",
+    message: "JobHunter backend running",
+    availableEndpoints: [
+      "GET /jobs",
+      "GET /jobs/:id",
+      "GET /api (list available APIs)"
+    ],
+  });
 });
+
+// 🔹 CRON JOB: Runs every 2 hours
+cron.schedule("* * * * *", async () => {
+  console.log("🕓 Cron: Starting scheduled crawl job...");
+  try {
+    await crawlWeWorkRemotely({
+      startUrl: "https://weworkremotely.com/remote-jobs/search?term=node",
+      maxPages: 10,
+    });
+    console.log("✅ Cron: Crawl job completed successfully.");
+  } catch (err) {
+    console.error("❌ Cron: Crawl job failed:", err.message);
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
