@@ -43,13 +43,28 @@ export async function searchWWRJobs(req, res, next) {
     const term = (req.query.term || "").trim();
     const live = String(req.query.live || "").toLowerCase() === "true";
 
+    const startPage = Math.max(1, parseInt(req.query.page || "1", 10));
+    const pagesToCrawl = Math.max(
+      1,
+      parseInt(req.query.pages || (live ? "1" : "1"), 10)
+    );
+
     if (!term) {
-      return res.status(400).json({ error: "Missing required query param: term" });
+      return res
+        .status(400)
+        .json({ error: "Missing required query param: term" });
     }
 
     if (live) {
-      const startUrl = `https://weworkremotely.com/remote-jobs/search?term=${encodeURIComponent(term)}`;
-      await crawlWeWorkRemotely({ startUrl, maxPages: parseInt(process.env.CRAWL_MAX_PAGES || "1", 10) });
+      const startUrl = `https://weworkremotely.com/remote-jobs/search?term=${encodeURIComponent(
+        term
+      )}${startPage > 1 ? `&page=${startPage}` : ""}`;
+
+      const maxPages = pagesToCrawl;
+      console.log(
+        `[searchWWRJobs] live crawl requested: term=${term} startPage=${startPage} pages=${pagesToCrawl}`
+      );
+      await crawlWeWorkRemotely({ startUrl, maxPages });
     }
 
     const pageLimit = 1000;
@@ -70,9 +85,11 @@ export async function searchWWRJobs(req, res, next) {
               it.title || "",
               it.company || "",
               it.description || "",
-              (it.descriptionPreview || ""),
-              (Array.isArray(it.tags) ? it.tags.join(" ") : ""),
-            ].join(" ").toLowerCase();
+              it.descriptionPreview || "",
+              Array.isArray(it.tags) ? it.tags.join(" ") : "",
+            ]
+              .join(" ")
+              .toLowerCase();
 
             if (hay.includes(q)) results.push(it);
           }
