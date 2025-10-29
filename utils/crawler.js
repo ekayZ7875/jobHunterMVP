@@ -1,12 +1,13 @@
 import { chromium } from "playwright";
 import { isAllowedToCrawl } from "./robot.js";
-import { upsertJob, batchUpsert } from "../models/jobs.models.js";
+import { upsertJob, batchUpsert, scanJobs } from "../models/jobs.models.js";
 import dotenv from "dotenv";
 dotenv.config();
 
 const DEFAULT_USER_AGENT =
-  process.env.CRAWL_USER_AGENT || "JobHunterBot/1.0 (+you@example.com)";
+  process.env.CRAWL_USER_AGENT || "JobHunterBot/1.0 (+you1@example.com)";
 const DEFAULT_MAX_PAGES = parseInt(process.env.CRAWL_MAX_PAGES || "5", 10);
+const DEFAULT_MAX_NO_NEW = parseInt(process.env.CRAWL_MAX_NO_NEW_PAGES || "5", 10);
 const DESCRIPTION_MAX_CHARS = 1000; // truncated text length stored in Dynamo
 const PREVIEW_CHARS = 200; // short preview for UI
 
@@ -28,6 +29,32 @@ function uniqueByJobId(items) {
     uniq.push(it);
   }
   return uniq;
+}
+
+/**
+ * Load all existing jobIds from Dynamo into a Set.
+ * Uses scanJobs pagination; safe for small/medium tables.
+ */
+async function loadExistingJobIds() {
+  const seen = new Set();
+  let lastKey = undefined;
+  const pageLimit = 500;
+  console.log("[loadExistingJobIds] scanning existing jobs in Dynamo...");
+  while (true) {
+    const { items, lastEvaluatedKey } = await scanJobs({
+      limit: pageLimit,
+      exclusiveStartKey: lastKey,
+    });
+    if (Array.isArray(items)) {
+      for (const it of items) {
+        if (it && it.jobId) seen.add(it.jobId);
+      }
+    }
+    if (!lastEvaluatedKey) break;
+    lastKey = lastEvaluatedKey;
+  }
+  console.log(`[loadExistingJobIds] found ${seen.size} existing jobs`);
+  return seen;
 }
 
 // Extract text-only description, normalize and truncate
@@ -222,13 +249,18 @@ async function collectJobLinksFromListing(page, listingUrl) {
 }
 
 /**
- * Public crawler function with duplicate protections
+ * Public crawler function with duplicate protections and full-run mode
  */
 export async function crawlWeWorkRemotely({
-  startUrl = "https://weworkremotely.com/remote-jobs/search?term=node",
+  startUrl = "https://weworkremotely.com/remote-jobs",
   maxPages = DEFAULT_MAX_PAGES,
+  maxConsecutiveNoNew = DEFAULT_MAX_NO_NEW,
 } = {}) {
-  console.log("[crawlWeWorkRemotely] starting", { startUrl, maxPages });
+  console.log("[crawlWeWorkRemotely] starting (full-run mode)", {
+    startUrl,
+    maxPages,
+    maxConsecutiveNoNew,
+  });
 
   const base = "https://weworkremotely.com";
   try {
@@ -247,6 +279,9 @@ export async function crawlWeWorkRemotely({
     // optional: throw err;
   }
 
+  // Load existing jobIds once (persistence across runs)
+  const existingJobIds = await loadExistingJobIds();
+
   const headless = process.env.CRAWL_HEADLESS === "false" ? false : true;
   let browser = null;
   let context = null;
@@ -262,7 +297,8 @@ export async function crawlWeWorkRemotely({
 
     let pageIndex = 0;
     const buffer = [];
-    const seenUrls = new Set(); // guard against visiting same URL twice
+    const seenUrls = new Set(); // seen within this run (URLs)
+    let consecutiveNoNew = 0;
 
     while (pageIndex < maxPages) {
       const listingUrl =
@@ -272,29 +308,76 @@ export async function crawlWeWorkRemotely({
       );
 
       const links = await collectJobLinksFromListing(page, listingUrl);
-      console.log(
-        `[crawl] links found: ${links.length} (page ${pageIndex + 1})`
-      );
+      console.log(`[crawl] links found on page ${pageIndex + 1}: ${links.length}`);
 
       if (!links.length) {
         console.warn(
-          "[crawl] no links found on this listing page — stopping pagination."
+          "[crawl] no links found on this listing page — increment no-new counter"
         );
-        break;
+        consecutiveNoNew++;
+        if (consecutiveNoNew >= maxConsecutiveNoNew) {
+          console.log(
+            `[crawl] reached ${consecutiveNoNew} consecutive pages with no links — stopping.`
+          );
+          break;
+        } else {
+          pageIndex++;
+          await sleep(1000 + Math.random() * 1000);
+          continue;
+        }
       }
 
-      for (const link of links) {
+      // Determine truly new links (not seen in this run, and not present in Dynamo)
+      const newLinks = links.filter((l) => {
         try {
-          if (seenUrls.has(link)) {
-            // skip duplicate link discovered earlier
-            console.log("[crawl] skipping seen link:", link);
-            continue;
-          }
-          seenUrls.add(link);
+          const parts = new URL(l).pathname.split("/").filter(Boolean);
+          const last = parts[parts.length - 1] || l;
+          const candidateJobId = `weworkremotely-${last}`;
+          if (existingJobIds.has(candidateJobId)) return false;
+          if (seenUrls.has(l)) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      });
 
+      if (newLinks.length === 0) {
+        console.log(
+          "[crawl] page had links but none are new (all stored or seen) — increment no-new counter"
+        );
+        consecutiveNoNew++;
+        if (consecutiveNoNew >= maxConsecutiveNoNew) {
+          console.log(
+            `[crawl] reached ${consecutiveNoNew} consecutive pages with no new links — stopping.`
+          );
+          break;
+        }
+        pageIndex++;
+        await sleep(1000 + Math.random() * 1200);
+        continue;
+      }
+
+      // Reset consecutive counter because we found new links
+      consecutiveNoNew = 0;
+
+      // Process all new links on this page
+      for (const link of newLinks) {
+        try {
+          seenUrls.add(link); // mark seen in this run
           const job = await parseJobDetail(page, link);
-          if (job) buffer.push(job);
-          else console.warn("[crawl] parse returned null for", link);
+          if (job) {
+            if (!existingJobIds.has(job.jobId)) {
+              buffer.push(job);
+              existingJobIds.add(job.jobId); // avoid duplicates across pages
+            } else {
+              console.log(
+                "[crawl] job was discovered during this run by another page, skipping:",
+                job.jobId
+              );
+            }
+          } else {
+            console.warn("[crawl] parse returned null for", link);
+          }
         } catch (err) {
           console.error(
             "[crawl] error parsing job",
@@ -303,18 +386,14 @@ export async function crawlWeWorkRemotely({
           );
         }
 
-        // flush periodically after deduplicating within the chunk
+        // flush periodically
         if (buffer.length >= 20) {
           const chunk = buffer.splice(0, 20);
           const uniqueChunk = uniqueByJobId(chunk);
-          if (uniqueChunk.length === 0) {
-            console.log(
-              "[crawl] chunk had no unique items, skipping batchUpsert"
-            );
-          } else {
+          if (uniqueChunk.length > 0) {
             try {
               console.log(
-                `[crawl] batchUpsert ${uniqueChunk.length} unique jobs to DynamoDB...`
+                `[crawl] batchUpsert ${uniqueChunk.length} new jobs to DynamoDB...`
               );
               await batchUpsert(uniqueChunk);
               console.log("[crawl] batchUpsert success");
@@ -323,28 +402,28 @@ export async function crawlWeWorkRemotely({
                 "[crawl] batchUpsert failed",
                 err && err.stack ? err.stack : err
               );
-              // on failure, push items back to buffer for retry attempt (but avoid infinite loop)
               buffer.unshift(...uniqueChunk);
               await sleep(2000);
             }
           }
         }
 
-        await sleep(700 + Math.random() * 800);
+        await sleep(500 + Math.random() * 800); // per-job polite delay (smaller to increase throughput)
       }
 
+      // finished this page; move to next
       pageIndex++;
-      await sleep(1500 + Math.random() * 1500);
+      await sleep(800 + Math.random() * 1200); // between pages
     }
 
-    // final flush (deduplicate again)
+    // final flush any remaining new jobs
     if (buffer.length) {
       const finalChunk = buffer.splice(0);
       const uniqueFinal = uniqueByJobId(finalChunk);
       if (uniqueFinal.length > 0) {
         try {
           console.log(
-            `[crawl] final batchUpsert of ${uniqueFinal.length} unique jobs...`
+            `[crawl] final batchUpsert of ${uniqueFinal.length} new jobs...`
           );
           await batchUpsert(uniqueFinal);
           console.log("[crawl] final flush success");
@@ -354,12 +433,10 @@ export async function crawlWeWorkRemotely({
             err && err.stack ? err.stack : err
           );
         }
-      } else {
-        console.log("[crawl] nothing unique to flush at the end");
       }
     }
 
-    console.log("[crawl] finished successfully");
+    console.log("[crawl] finished successfully (full-run)");
   } catch (err) {
     console.error(
       "[crawlWeWorkRemotely] top-level error:",

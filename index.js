@@ -31,7 +31,7 @@ cron.schedule("* * * * *", async () => {
   console.log("🕓 Cron: Starting scheduled crawl job...");
   try {
     await crawlWeWorkRemotely({
-      startUrl: "https://weworkremotely.com/remote-jobs/search?term=node",
+      startUrl: "https://weworkremotely.com/remote-jobs",
       maxPages: 10,
     });
     console.log("✅ Cron: Crawl job completed successfully.");

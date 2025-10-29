@@ -14,7 +14,7 @@ async function main() {
   try {
     const startUrl =
       process.env.CRAWL_START_URL ||
-      "https://weworkremotely.com/remote-jobs/search?term=node";
+      "https://weworkremotely.com/remote-jobs/search?term=javascript";
     const maxPages = parseInt(process.env.CRAWL_MAX_PAGES || "5", 10);
 
     console.log(
