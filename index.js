@@ -1,14 +1,25 @@
 import express from "express";
 import dotenv from "dotenv";
+import cors from 'cors'
 import morgan from "morgan";
 import cron from "node-cron";
 import { crawlWeWorkRemotely } from "./utils/crawler.js";
 import jobsRoutes from "./routes/jobs.routes.js";
 
+const allowedorigins = [
+    "http://localhost:8080",
+]
+
+
 dotenv.config();
 const app = express();
 app.use(express.json());
 app.use(morgan("dev"));
+app.use(cors({
+    origin:allowedorigins,
+    methods:["GET","POST","PUT","DELETE"],
+    credentials:true
+}))
 
 // Routes
 app.use("/jobs", jobsRoutes);
