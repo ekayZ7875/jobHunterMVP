@@ -8,7 +8,7 @@ import jobsRoutes from "./routes/jobs.routes.js";
 dotenv.config();
 const app = express();
 app.use(express.json());
-app.use(morgan('dev'))
+app.use(morgan("dev"));
 
 // Routes
 app.use("/jobs", jobsRoutes);
@@ -18,11 +18,7 @@ app.get("/", (req, res) => {
   res.json({
     status: "OK",
     message: "JobHunter backend running",
-    availableEndpoints: [
-      "GET /jobs",
-      "GET /jobs/:id",
-      "GET /api (list available APIs)"
-    ],
+    availableEndpoints: ["GET /jobs/get-all-jobs", "GET /jobs/search-jobs"],
   });
 });
 
