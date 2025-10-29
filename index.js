@@ -27,7 +27,7 @@ app.get("/", (req, res) => {
 });
 
 // 🔹 CRON JOB: Runs every 15 minutes
-cron.schedule("*/15 * * * *", async () => {
+cron.schedule("* * * * *", async () => {
   console.log("🕓 Cron: Starting scheduled crawl job...");
   try {
     await crawlWeWorkRemotely({
