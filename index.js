@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 import morgan from "morgan";
 import cron from "node-cron";
 import { crawlWeWorkRemotely } from "./utils/crawler.js";
-// import jobsRoutes from "./routes/jobs.routes.js";
+import jobsRoutes from "./routes/jobs.routes.js";
 
 dotenv.config();
 const app = express();
@@ -11,7 +11,7 @@ app.use(express.json());
 app.use(morgan('dev'))
 
 // Routes
-// app.use("/jobs", jobsRoutes);
+app.use("/jobs", jobsRoutes);
 
 // Root route — simple health check
 app.get("/", (req, res) => {
@@ -26,8 +26,8 @@ app.get("/", (req, res) => {
   });
 });
 
-// 🔹 CRON JOB: Runs every 2 hours
-cron.schedule("* * * * *", async () => {
+// 🔹 CRON JOB: Runs every 15 minutes
+cron.schedule("*/15 * * * *", async () => {
   console.log("🕓 Cron: Starting scheduled crawl job...");
   try {
     await crawlWeWorkRemotely({
@@ -40,5 +40,5 @@ cron.schedule("* * * * *", async () => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
